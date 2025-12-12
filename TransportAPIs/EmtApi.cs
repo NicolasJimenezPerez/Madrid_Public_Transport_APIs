@@ -3,6 +3,34 @@ using System.Text.Json.Nodes;
 
 namespace TransportAPIs
 {
+    #region Exceptions
+    
+    /// <summary>
+    /// Exceptions thrown when network errors occur
+    /// </summary>
+    public class NetworkException : Exception
+    {
+        /// <summary>
+        /// Constructor for the Network Exception
+        /// </summary>
+        /// <param name="message">Message of the exception</param>
+        public NetworkException(string message) : base(message) { }
+    }
+
+    /// <summary>
+    /// Exceptions thrown when the server fails an operation
+    /// </summary>
+    public class ServerErrorException : Exception
+    {
+        /// <summary>
+        /// Constructor for the ApiError Exception
+        /// </summary>
+        /// <param name="message">Message of the exception</param>
+        public  ServerErrorException(string message) : base(message) { }
+    }
+    
+    #endregion
+    
     public partial class EmtApi
     {
         #region Public Classes
@@ -112,6 +140,11 @@ namespace TransportAPIs
 
                 // Load the bus lines associated with the stop 
                 Lines = emtApi.GetBusStopLines(id);
+                if (Lines == null)
+                {
+                    Console.WriteLine($"Error: Could not get lines for {id}.");
+                    return;
+                }
 
                 UpdateArrivalTimes();
             }
@@ -183,65 +216,54 @@ namespace TransportAPIs
         /// Checks if the server is up
         /// </summary>
         /// <returns>Returns true if the server is up</returns>
+        /// <exception cref="NetworkException">Gets thrown when the network traffic fails</exception>
         private bool IsServerUp()
         {
             // Check Server Status
-            var response = client.GetAsync("v1/hello/").Result;
-            Console.WriteLine();
+            HttpResponseMessage response = client.GetAsync("v1/hello/").Result;
 
-            return response.Content.ReadAsStringAsync().Result.Contains("Ok");
+            if (response.IsSuccessStatusCode)
+                throw new NetworkException("Error: Communication to server failed during IsServerUp. Code: " + response.StatusCode);
+                
+            return JsonNode.Parse(response.Content.ReadAsStringAsync().Result)!["code"].ToString() == "00";
         }
-
+        
         /// <summary>
         /// Logs in with the server and retrieves the access token
         /// </summary>
-        /// <returns>Returns true if the login is successful</returns>
-        public bool Login()
+        /// <exception cref="NetworkException">Gets thrown when the network traffic fails</exception>
+        /// <exception cref="ServerErrorException">Gets thrown when the server returns an error</exception>
+        public void Login()
         {
             // Send get to server
             if (!sendGet("v3/mobilitylabs/user/login/", JsonNode.Parse(loginJson), out JsonNode response, out HttpStatusCode respStatusCode))
-            {
-                Console.WriteLine("Error: Communication to server failed during Login. Code: " + respStatusCode);
-                return false;
-            }
+                throw new NetworkException("Error: Communication to server failed during Login. Code: " + respStatusCode);
 
             // Check the code for a successful response and save the access token if so
             string code = response!["code"].ToString();
             if (code != "00" && code != "01")
-            {
-                Console.WriteLine("Error: Login failed. Code = " + code);
-                return false;
-            }
+                throw new ServerErrorException($"Error: Login failed. Code = {code}. {response!["description"]}");
 
             accessToken = response!["data"][0]["accessToken"].ToString();
-
-            return true;
         }
 
         /// <summary>
         /// Ask the server if the access token is active
         /// </summary>
-        /// <returns>Returns true if the access token is active</returns>
-        public bool IsTockenActive()
+        /// <exception cref="NetworkException">Gets thrown when the network traffic fails</exception>
+        /// <exception cref="ServerErrorException">Gets thrown when the server returns an error</exception>
+        public void IsTockenActive()
         {
             // Send query to server
             if (!sendGetWithAccessToken("v1/mobilitylabs/user/whoami/", out JsonNode response,
                     out HttpStatusCode respStatusCode))
-            {
-                Console.WriteLine("Error: Communication to server failed during IsTokenActive. Code: " +
-                                  respStatusCode);
-                return false;
-            }
+                throw new NetworkException("Error: Communication to server failed during IsTokenActive. Code: " +
+                                          respStatusCode);
 
             // Check the code for a successful response and save the access token if so
             string code = response!["code"].ToString();
             if (code != "02")
-            {
-                Console.WriteLine("Error: Token inactive. Code = " + code);
-                return false;
-            }
-
-            return true;
+                throw new ServerErrorException($"Error: Token inactive. Code = {code}. {response!["description"]}");
         }
 
         /// <summary>
@@ -340,23 +362,19 @@ namespace TransportAPIs
         /// </summary>
         /// <param name="stopId">The id of the stop</param>
         /// <returns>The array of lines that go through the stop</returns>
+        /// <exception cref="NetworkException">Gets thrown when the network traffic fails</exception>
+        /// <exception cref="ServerErrorException">Gets thrown when the server returns an error</exception>
         private BusStop.Line[]? GetBusStopLines(int stopId)
         {
             // Send get to server
             if (!sendGetWithAccessToken($"v1/transport/busemtmad/stops/{stopId}/detail/", out JsonNode response,
                     out HttpStatusCode respStatusCode))
-            {
-                Console.WriteLine("Error: Communication to server failed during GetBusStop. Code: " + respStatusCode);
-                return null;
-            }
+                throw new NetworkException("Error: Communication to server failed during GetBusStop. Code: " + respStatusCode);
 
             // Check the code for a successful response and save the access token if so
             string code = response!["code"].ToString();
             if (code != "00")
-            {
-                Console.WriteLine($"Error: Failed to retrieve info from bus stop #{stopId}. Code = " + code);
-                return null;
-            }
+                throw new ServerErrorException($"Error: Failed to retrieve info from bus stop #{stopId}. Code = {code}. {response!["description"]}");
 
             // Get the buses in the stop
             JsonArray rawLines = response!["data"][0][0][0]["dataLine"].AsArray();
@@ -375,6 +393,8 @@ namespace TransportAPIs
         /// <param name="stopId">The bus stop id</param>
         /// <param name="lineId">The bus line id</param>
         /// <returns>An array of the predicted arrival times</returns>
+        /// <exception cref="NetworkException">Gets thrown when the network traffic fails</exception>
+        /// <exception cref="ServerErrorException">Gets thrown when the server returns an error</exception>
         private TimeSpan[]? GetTimeTillArrivalAtStop(int stopId, string lineId)
         {
             // Create the Json to send to the server
@@ -387,20 +407,14 @@ namespace TransportAPIs
             // Send post to server
             if (!sendPostWithAccessToken($"v2/transport/busemtmad/stops/{stopId}/arrives/{lineId}/", content,
                     out JsonNode response, out HttpStatusCode respStatusCode))
-            {
-                Console.WriteLine("Error: Communication to server failed during GetTimeTillArrivalAtStop. Code: " +
-                                  respStatusCode);
-                return null;
-            }
+                throw new NetworkException("Error: Communication to server failed during GetTimeTillArrivalAtStop. Code: " +
+                                           respStatusCode);
 
             // Check the code for a successful response and save the access token if so
             string code = response!["code"].ToString();
             if (code != "00")
-            {
-                Console.WriteLine(
-                    $"Error: Failed to retrieve info from bus line #{lineId} arrival at #{stopId}. Code = " + code);
-                return null;
-            }
+                throw new ServerErrorException(
+                    $"Error: Failed to retrieve info from bus line #{lineId} arrival at #{stopId}. Code = {code}. {response!["description"]}");
 
             // Get the arrival time for the bus
             List<TimeSpan> arrivals = new List<TimeSpan>();
